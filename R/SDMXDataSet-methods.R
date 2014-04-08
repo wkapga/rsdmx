@@ -12,63 +12,53 @@ SDMXDataSet <- function(xmlObj){
 as.data.frame.SDMXDataSet <- function(x, ...){
 	xmlObj <- x@xmlObj;
 
-	#tag prefix management
-	prefix1<-unlist(strsplit(xmlName(xmlRoot(xmlObj)[[2]], full=T),':'))[1]
-	prefix2<-unlist(strsplit(xmlName(xmlChildren(getNodeSet(xmlObj,paste('//',prefix1,':DataSet', sep=''))[[1]])[[1]], full = T),':'))[1]
+	nsDefs <- as.vector(xmlNamespaceDefinitions(xmlObj, simplify = T))
+	ns <- c(ns = nsDefs[grep("generic", nsDefs[grep("metadata", nsDefs,invert = TRUE)])])
 	
 	#concepts (attributes)
-	conceptsXML<-getNodeSet(xmlObj, paste("//",prefix2,":SeriesKey/",prefix2,":Value", sep=""))
-	concepts<-unique(sapply(conceptsXML, function(x) xmlGetAttr(x, "concept")))
+	keysXML <- getNodeSet(xmlDoc(getNodeSet(xmlObj, "//ns:SeriesKey", namespaces = ns)[[1]]), "//ns:Value", namespaces = ns)
+	keys <- unique(sapply(keysXML, function(x) xmlGetAttr(x, "concept")))
 	
 	#series
-	seriesXML<-getNodeSet(xmlObj, paste('//',prefix2,':Series', sep=''))
-	seriesNb<-length(seriesXML)
+	serieNames <- c(keys, "Time", "ObsValue")
+	seriesXML <- getNodeSet(xmlObj, "//ns:Series", namespaces = ns)
+	seriesNb <- length(seriesXML)
 	if(seriesNb == 0) return(NULL);
-
-	#converting SDMX series to a DataFrame R object
-	for(x in 1:seriesNb){
+	
+	#function to parse a Serie
+	parseSerie <- function(x){
 		
 		# Single serie XMLInternalNode converted into a XMLInternalDocument
-		serieXML<-xmlDoc(seriesXML[[x]])
+		serieXML <- xmlDoc(x)
 		
 		#obsTimes
-		obsTimesXML<-getNodeSet(serieXML, paste("//",prefix2,":Series/",prefix2,":Obs/",prefix2,":Time", sep=""))
-		obsTime<-sapply(obsTimesXML,function(x) {xmlValue(x)})
-		L<-length(obsTime)
-
+		obsTimesXML <- getNodeSet(serieXML, "//ns:Series/ns:Obs/ns:Time", namespaces = ns)
+		obsTime <- sapply(obsTimesXML, function(x) {xmlValue(x)})
 		
-		#Concept values (Note: the SeriesKey (concept attributes/values) are duplicated according to the number of Time observations)
-		conceptValues<-as.data.frame(sapply(concepts, function(x){
-														conceptValuesXML<-getNodeSet(serieXML, sprintf(paste("//",prefix2,":SeriesKey/",prefix2,":Value[@concept='%s']",sep=""),x))
-														conceptValues<-lapply(conceptValuesXML,function(i) {rep(xmlGetAttr(i,"value"),L)})
-														}))
-
+		#obsValues
+		obsValuesXML <- getNodeSet(serieXML, "//ns:Series/ns:Obs/ns:ObsValue", namespaces = ns)
+		obsValue <- sapply(obsValuesXML, function(x) { as.numeric(xmlGetAttr(x, "value")) })
+		
+		#Key values
+		#SeriesKey (concept attributes/values) are duplicated according to the number of Time observations)
+		keyValuesXML <- getNodeSet(serieXML, "//ns:SeriesKey/ns:Value", namespaces = ns)
+		keyValues <- sapply(keyValuesXML, function(x) as.character(xmlGetAttr(x, "value")))
+		keydf <- structure(keyValues, .Names = keys) 
+		keydf <- data.frame(lapply(keydf, as.character), stringsAsFactors=FALSE)
+		keydf <- keydf[rep(row.names(keydf), length(obsTime)),]
 		
 		#single Serie as DataFrame
-		serieDF<-cbind(conceptValues, obsTime)
-		
-		#add single DataFrame to dataset 
-		if(x==1){ dataset<-serieDF }else{ dataset<-rbind(dataset,serieDF)}
-	}
-	
-	# adding obsValues
-	obsValuesXML<-getNodeSet(xmlObj,paste("//",prefix2,":ObsValue[@value]",sep=""))
-	obsValue<-sapply(obsValuesXML, function(x) {xmlGetAttr(x,"value")})
-	dataset<-cbind(dataset, obsValue)
-	
-	# workaround to ensure that numeric variables would not be considered as factors (having a obsValue variable as factor prevent from performing operations)
-	checkMode<-function(x){
-		options(warn=-1)
-		check<-as.numeric(as.character(x))
-		options(warn=0)
-		if(is.na(check)) {
-			return("factor")
-		} else {
-			return("numeric")
+		if(length(obsTime) > 0){
+			serie <- cbind(keydf, obsTime, obsValue)
+		}else{
+			serie <- NULL
 		}
+		return(serie)
 	}
-	modes<-sapply(dataset[1,], checkMode)
-	for(i in 1:ncol(dataset)) dataset[,i]<-if(modes[i]=="numeric") as.numeric(as.character(dataset[,i])) else dataset[,i]
+	
+	#converting SDMX series to a DataFrame R object
+	dataset <- do.call("rbind", lapply(seriesXML, function(x){ serie <- parseSerie(x) }))
+	row.names(dataset) <- 1:nrow(dataset)
 	
 	# output
 	return(dataset)
